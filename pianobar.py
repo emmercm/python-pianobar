@@ -4,6 +4,7 @@ import re
 
 class pianobar(object):
 	_pianobar = None
+	_station = None
 	
 	def __init__(self, *args):
 		pass
@@ -18,8 +19,11 @@ class pianobar(object):
 			
 	def Exit(self):
 		return self.Send("q")
-			
-			
+		
+		
+	def IsLoaded(self):
+		return (self._station != None and self.IsRunning())
+		
 	def IsRunning(self):
 		try:
 			return self._pianobar.isalive()
@@ -90,6 +94,7 @@ class pianobar(object):
 			self._pianobar.send("s\b")
 			self._pianobar.send(str(station_id)+"\n")
 			self._pianobar.expect_exact("Receiving new playlist... Ok", timeout=5)
+			self._station = station_id
 			return True
 		except pexpect.ExceptionPexpect:
 			return False
@@ -97,51 +102,52 @@ class pianobar(object):
 			
 	def GetInfo(self):
 		trackinfo = {}
-		re_track = re.compile(".*\"(.+?)\" by \"(.+?)\" on \"(.+?)\".*", re.IGNORECASE)
-		re_progress = re.compile("-([\:0-9]+)/([\:0-9]+)")
-		try:
-			self._pianobar.send("i\b")
-			self._pianobar.expect_exact("Station", timeout=1)
-			buffer = self.ExpectLines(4)
-			for line in buffer.splitlines():
-				# print line
-				track = re_track.findall(line)
-				if len(track) == 1 and len(track[0]) == 3:
-					trackinfo = dict(trackinfo.items() + {"artist":track[0][1], "title":track[0][0], "album":track[0][2]}.items())
-				progress = re_progress.findall(line)
-				if len(progress) == 1 and len(progress[0]) == 2:
-					remaining = datetime.datetime.strptime(progress[0][0],"%M:%S")
-					remaining = remaining.minute*60 + remaining.second
-					length = datetime.datetime.strptime(progress[0][1],"%M:%S")
-					length = length.minute*60 + length.second
-					trackinfo = dict(trackinfo.items() + {"elapsed":(length-remaining), "length":length}.items())
-		except pexpect.ExceptionPexpect:
-			pass
+		if self._station is not None:
+			re_track = re.compile(".*\"(.+?)\" by \"(.+?)\" on \"(.+?)\".*", re.IGNORECASE)
+			re_progress = re.compile("-([\:0-9]+)/([\:0-9]+)")
+			try:
+				self._pianobar.send("i\b")
+				self._pianobar.expect_exact("Station", timeout=1)
+				buffer = self.ExpectLines(4)
+				for line in buffer.splitlines():
+					# print line
+					track = re_track.findall(line)
+					if len(track) == 1 and len(track[0]) == 3:
+						trackinfo = dict(trackinfo.items() + {"artist":track[0][1], "title":track[0][0], "album":track[0][2], "playing":True}.items())
+					progress = re_progress.findall(line)
+					if len(progress) == 1 and len(progress[0]) == 2:
+						remaining = datetime.datetime.strptime(progress[0][0],"%M:%S")
+						remaining = remaining.minute*60 + remaining.second
+						length = datetime.datetime.strptime(progress[0][1],"%M:%S")
+						length = length.minute*60 + length.second
+						trackinfo = dict(trackinfo.items() + {"elapsed":(length-remaining), "length":length}.items())
+			except pexpect.ExceptionPexpect:
+				pass
 		return trackinfo
 		
 	def GetPlaylist(self):
 		playlist = []
-		try:
-			# Parse history
-			self._pianobar.send("h\b\n")
-			if self._pianobar.expect_exact(["No history yet","Select song:"], timeout=1) == 1:
+		if self._station is not None:
+			try:
+				# Parse history
+				self._pianobar.send("h\b\n")
+				if self._pianobar.expect_exact(["No history yet","Select song:"], timeout=1) == 1:
+					for line in self._pianobar.before.splitlines():
+						if re.search("\s+[0-9]+\)\s+", line) is not None: # match " #) "
+							track = line[9:].strip().split(" - ",1)
+							if len(track) == 2:
+								playlist.append({"artist":track[0], "title":track[1], "playing":False})
+				# Parse current
+				current = self.GetInfo()
+				playlist.append(self.GetInfo())
+				# Parse upcoming
+				self._pianobar.send("u\b")
+				self._pianobar.expect("[\:0-9]+/[\:0-9]+", timeout=1)
 				for line in self._pianobar.before.splitlines():
 					if re.search("\s+[0-9]+\)\s+", line) is not None: # match " #) "
 						track = line[9:].strip().split(" - ",1)
 						if len(track) == 2:
-							playlist.append({"artist":track[0], "title":track[1], "Current":False})
-			# Parse current
-			current = self.GetInfo()
-			current["current"] = True
-			playlist.append(self.GetInfo())
-			# Parse upcoming
-			self._pianobar.send("u\b")
-			self._pianobar.expect("[\:0-9]+/[\:0-9]+", timeout=1)
-			for line in self._pianobar.before.splitlines():
-				if re.search("\s+[0-9]+\)\s+", line) is not None: # match " #) "
-					track = line[9:].strip().split(" - ",1)
-					if len(track) == 2:
-						playlist.append({"artist":track[0], "title":track[1], "Current":False})
-		except pexpect.ExceptionPexpect:
-			pass
+							playlist.append({"artist":track[0], "title":track[1], "playing":False})
+			except pexpect.ExceptionPexpect:
+				pass
 		return playlist
